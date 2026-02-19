@@ -1,0 +1,232 @@
+:scrollbar:
+:toc2:
+:linkattrs:
+:kroki-server-url: https://kroki.io
+:kroki-default-format: svg"
+
+= HHD Sphincs Plus example
+
+:numbered:
+
+== run example
+
+-----
+cargo run --example hhd_sphincs_plus
+-----
+
+== derivation paths
+
+The derivation path follows the convention:
+
+-----
+m/83696968'/{app_no}'/{index}'
+-----
+
+where:
+
+* 83696968 plays the same role as the _purpose_ level in other BIPs and is hard-coded in the standard.
+* {app_no} is the path for the application
+* {index} is the index.
+
+=== Schnorr (Taproot) key derivation — two-stage example
+
+Deriving multiple Schnorr keys requires two stages.
+The BIP-85 path produces a single 64-byte child seed (stage 1);
+BIP-86 then derives individual keypairs from that seed (stage 2).
+
+*Stage 1 — BIP-85* (run once against the master mnemonic seed):
+
+-----
+m/83696968'/83286642'/1'  →  64-byte child seed
+-----
+
+*Stage 2 — BIP-86* (run on the child seed, once per keypair):
+
+-----
+m/86'/0'/0'/0/0   →  Schnorr keypair #0  (first receive address)
+m/86'/0'/0'/0/1   →  Schnorr keypair #1
+m/86'/0'/0'/0/2   →  Schnorr keypair #2
+m/86'/0'/0'/0/3   →  Schnorr keypair #3
+m/86'/0'/0'/0/4   →  Schnorr keypair #4
+-----
+
+BIP-86 path components:
+
+[cols="1,3", options="header"]
+|===
+| Component | Meaning
+
+| `86'`
+| Purpose — BIP-86 (Taproot keypath spend)
+
+| `0'`
+| Coin type — Bitcoin mainnet
+
+| `0'`
+| Account index
+
+| `0`
+| Chain — external (receive); `1` = change
+
+| `i`
+| Address index — non-hardened, enabling xpub derivation
+|===
+
+Each leaf private key receives the BIP-341 tweak
+(`Q = P + H_taptweak(P)·G`) before encoding as a `bc1p…` bech32m address.
+The non-hardened address index allows a watch-only wallet to scan all
+addresses from the xpub without exposing the private key.
+
+=== SLH-DSA key derivation — two-stage example
+
+==== What is SLIP-0010?
+
+https://github.com/satoshilabs/slips/blob/master/slip-0010.md[SLIP-0010]
+(by SatoshiLabs) generalises BIP-32 hierarchical deterministic derivation
+to curves and schemes beyond secp256k1.  BIP-32 hard-codes the string
+`"Bitcoin seed"` as the HMAC-SHA512 key when deriving the root key from a
+seed.  SLIP-0010 replaces that string with a scheme-specific
+_domain separator_, making the root derivation unique per algorithm:
+
+[cols="1,2", options="header"]
+|===
+| Scheme | Domain separator
+
+| secp256k1
+| `"Bitcoin seed"` (identical to BIP-32)
+
+| NIST P-256
+| `"Nist256p1 seed"`
+
+| ed25519
+| `"ed25519 seed"`
+
+| Falcon-512 _(this project)_
+| `"Falcon-512 seed"`
+
+| SLH-DSA-128s _(this project)_
+| `"SLH-DSA-128s seed"`
+|===
+
+SLIP-0010 also mandates *hardened-only* child derivation for non-secp256k1
+schemes.  Non-hardened derivation requires elliptic-curve point addition,
+which does not exist in post-quantum schemes.  Hardened derivation uses
+only `HMAC-SHA512(key=chain_code, data=0x00 ‖ privkey ‖ index)` and is
+therefore curve-agnostic.
+
+The consequence is that there is no xpub equivalent for SLH-DSA: every
+child key derivation requires the parent private key.  Watch-only wallet
+scanning is not possible without an out-of-band mechanism.
+
+==== Derivation paths
+
+The purpose number `7744627` is used here as a project-specific identifier
+for SLH-DSA SLIP-0010 derivation.  It is the T9 encoding of `"SPHINCS"`.
+
+*Stage 1 — BIP-85* (run once against the master mnemonic seed):
+
+-----
+m/83696968'/83286642'/7'  →  64-byte child seed
+-----
+
+*Stage 2 — SLIP-0010* (run on the child seed, once per key index):
+
+-----
+m/7744627'/0'/0'/0'/0'   →  32-byte leaf seed #0
+m/7744627'/0'/0'/0'/1'   →  32-byte leaf seed #1
+m/7744627'/0'/0'/0'/2'   →  32-byte leaf seed #2
+m/7744627'/0'/0'/0'/3'   →  32-byte leaf seed #3
+m/7744627'/0'/0'/0'/4'   →  32-byte leaf seed #4
+-----
+
+All components are hardened (trailing `'`).
+
+*Stage 3 — key generation* (run on each leaf seed):
+
+-----
+leaf seed (32 B)  →  ChaCha20 expand  →  128 bytes  →  generate_keypair()  →  SLH-DSA-128s keypair
+-----
+
+The `bitcoinpqc` API requires 128 bytes of input to `generate_keypair`.
+The ChaCha20 expansion is deterministic — no additional entropy is
+introduced beyond the 32-byte leaf seed.
+
+SLIP-0010 path components:
+
+[cols="1,3", options="header"]
+|===
+| Component | Meaning
+
+| `7744627'`
+| Purpose — SLH-DSA SLIP-0010 (T9 for "SPHINCS", project-specific)
+
+| `0'`
+| Coin type — hardened (no SLIP-44 entry exists for SLH-DSA)
+
+| `0'`
+| Account index
+
+| `0'`
+| Chain — hardened (non-hardened not possible without xpub support)
+
+| `i'`
+| Address index — hardened
+|===
+
+The 32-byte leaf key produced by SLIP-0010 is then expanded to 128 bytes
+via ChaCha20 (required by the `bitcoinpqc` API) before being passed to
+`generate_keypair(SLH_DSA_128S, ...)`.
+
+
+== TO-DO
+
+=== new app_no
+
+
+
+As per link:../src/hhd/ARCHITECTURE.md[ARCHITECTURE.MD], the current _app_no_ used by Tectonic is:  83286642.
+
+Other organizations should define and use their own _app_no_.
+
+=== replace bip32 dependency
+
+This project currently uses the link:https://docs.rs/bip32/latest/bip32/[bip32 crate].
+This _bip32_ crate pulls the transitive dependency link://https://docs.rs/k256/latest/k256/[k256].
+
+So as to align with BDK, best to remove these dependencies and replace with equivalents used in BDK.
+
+
+=== typescript implementation
+
+Native TypeScript is viable using the `@noble`/`@scure` family of libraries.
+Every primitive used in this codebase has a well-audited pure-TS equivalent:
+
+[cols="1,1", options="header"]
+|===
+| Rust component
+| TypeScript equivalent
+
+| BIP-39
+| `@scure/bip39`
+
+| BIP-32 XPrv derivation
+| `@scure/bip32`
+
+| HMAC-SHA512 (BIP-85)
+| `@noble/hashes`
+
+| secp256k1 Schnorr
+| `@noble/curves/secp256k1`
+
+| SLH-DSA-128s (SPHINCS+)
+| `@noble/post-quantum`
+
+| ChaCha20 seed expansion
+| `@noble/ciphers/chacha`
+|===
+
+
+=== test vectors
+
+The BIP-85 derivation and seed expansion in the typescript must produce identical bytes to the Rust implementation.
+This can be proven via a thorough set of test vectors.
